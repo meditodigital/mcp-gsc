@@ -408,6 +408,76 @@ By default, `add_site`, `delete_site`, and `delete_sitemap` are disabled. To ena
 
 The standard setup runs the server locally. This section is only for users who want to run it on a remote server or in a container.
 
+### Claude/Cowork Remote Connector
+
+For an organization connector, use the protected Streamable HTTP endpoint instead of unauthenticated SSE:
+
+```text
+https://<railway-domain>/mcp
+```
+
+Google Cloud setup:
+
+1. Enable the Search Console API.
+2. Configure Google Auth Platform with Audience set to Internal.
+3. Create a Web application OAuth client.
+4. Add this redirect URI:
+
+```text
+https://<railway-domain>/auth/google/callback
+```
+
+Use read-only GSC access by default:
+
+```env
+GOOGLE_SCOPES=openid email profile https://www.googleapis.com/auth/webmasters.readonly
+```
+
+Use write-capable GSC access only if you need sitemap submission or property changes:
+
+```env
+GOOGLE_SCOPES=openid email profile https://www.googleapis.com/auth/webmasters
+```
+
+Railway variables:
+
+```env
+MCP_TRANSPORT=streamable-http
+PUBLIC_BASE_URL=https://<railway-domain>
+MCP_HOST=0.0.0.0
+MCP_PORT=3001
+
+GOOGLE_CLIENT_ID=<google-web-client-id>
+GOOGLE_CLIENT_SECRET=<google-web-client-secret>
+GOOGLE_HOSTED_DOMAIN=meditodigital.com
+GOOGLE_SCOPES=openid email profile https://www.googleapis.com/auth/webmasters.readonly
+
+MCP_OAUTH_CLIENT_ID=<connector-client-id>
+MCP_OAUTH_CLIENT_SECRET=<connector-client-secret>
+MCP_OAUTH_REDIRECT_URIS=<claude-connector-redirect-uri>
+
+DATABASE_URL=<postgres-url>
+APP_ENCRYPTION_KEY=<fernet-key>
+SESSION_COOKIE_SECRET=<random-32-plus-character-secret>
+GSC_ALLOW_DESTRUCTIVE=false
+```
+
+Generate `APP_ENCRYPTION_KEY` with:
+
+```bash
+python generate_secrets.py
+```
+
+In Claude organization connector settings, use:
+
+```text
+MCP server URL: https://<railway-domain>/mcp
+OAuth client ID: MCP_OAUTH_CLIENT_ID
+OAuth client secret: MCP_OAUTH_CLIENT_SECRET
+```
+
+`MCP_OAUTH_CLIENT_ID` and `MCP_OAUTH_CLIENT_SECRET` are for Claude connecting to this MCP server. They are not the Google OAuth client values.
+
 ### HTTP Transport
 
 ```bash
@@ -416,7 +486,7 @@ MCP_TRANSPORT=sse MCP_HOST=0.0.0.0 MCP_PORT=3001 python gsc_server.py
 
 | Variable | Default | Description |
 |---|---|---|
-| `MCP_TRANSPORT` | `stdio` | Set to `sse` for network/remote use |
+| `MCP_TRANSPORT` | `stdio` | Set to `sse` for raw SSE or `streamable-http` for Claude/Cowork connectors |
 | `MCP_HOST` | `127.0.0.1` | Host to bind |
 | `MCP_PORT` | `3001` | Port to bind |
 

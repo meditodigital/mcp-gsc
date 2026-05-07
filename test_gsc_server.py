@@ -776,5 +776,130 @@ class TestStdoutClean(unittest.TestCase):
         self.assertEqual(stdout_output, "", f"Unexpected stdout: {stdout_output!r}")
 
 
+class TestRemoteAuth(unittest.TestCase):
+
+    def test_config_defaults_to_readonly_scope(self):
+        from app_config import READONLY_GSC_SCOPE, WRITE_GSC_SCOPE, load_app_config
+
+        config = load_app_config(_remote_env())
+        self.assertIn(READONLY_GSC_SCOPE, config.google.scopes)
+        self.assertNotIn(WRITE_GSC_SCOPE, config.google.scopes)
+
+    def test_write_scope_replaces_readonly_scope(self):
+        from app_config import READONLY_GSC_SCOPE, WRITE_GSC_SCOPE, load_app_config
+
+        env = _remote_env({"GOOGLE_SCOPES": f"openid email profile {READONLY_GSC_SCOPE} {WRITE_GSC_SCOPE}"})
+        config = load_app_config(env)
+        self.assertIn(WRITE_GSC_SCOPE, config.google.scopes)
+        self.assertNotIn(READONLY_GSC_SCOPE, config.google.scopes)
+
+    def test_token_store_roundtrip(self):
+        from token_store import Principal, TokenStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = TokenStore(f"sqlite:///{os.path.join(tmpdir, 'auth.db')}", _fernet_key())
+            store.init()
+            principal = Principal("sub-1", "user@meditodigital.com", "meditodigital.com", "User")
+            credentials = json.dumps({"token": "access", "refresh_token": "refresh", "client_id": "gid", "client_secret": "secret"})
+            store.store_google_credentials(principal, credentials, ["openid"])
+            stored = store.get_google_credentials("sub-1")
+            self.assertIsNotNone(stored)
+            self.assertEqual(json.loads(stored[1])["refresh_token"], "refresh")
+            pair = store.create_token_pair("client", principal, ["mcp"], 60, 120)
+            validation = store.validate_access_token(pair.access_token)
+            self.assertIsNotNone(validation)
+            self.assertEqual(validation.principal.email, "user@meditodigital.com")
+            rotated = store.rotate_refresh_token(pair.refresh_token, "client", 60, 120)
+            self.assertIsNotNone(rotated)
+
+    def test_oauth_code_flow_uses_workspace_session(self):
+        from app_config import load_app_config
+        from oauth_server import _sign, _s256, oauth_routes
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+        from token_store import Principal, TokenStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = _remote_env({"DATABASE_URL": f"sqlite:///{os.path.join(tmpdir, 'auth.db')}"})
+            config = load_app_config(env)
+            store = TokenStore(config.database_url, config.encryption_key)
+            store.init()
+            principal = Principal("sub-1", "user@meditodigital.com", "meditodigital.com", "User")
+            store.store_google_credentials(principal, json.dumps({"refresh_token": "refresh"}), ["openid"])
+            verifier = "verifier-value"
+            query = (
+                "/oauth/authorize?response_type=code&client_id=mcp-client&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback"
+                f"&code_challenge={_s256(verifier)}&code_challenge_method=S256&scope=mcp&state=abc"
+            )
+            app = Starlette(routes=oauth_routes(config, store))
+            cookie = _sign({"sub": principal.subject, "email": principal.email, "hd": principal.hosted_domain, "name": principal.display_name, "exp": 9999999999}, config.session.cookie_secret)
+            with TestClient(app) as client:
+                client.cookies.set(config.session.cookie_name, cookie)
+                response = client.get(query, follow_redirects=False)
+                self.assertEqual(response.status_code, 302)
+                code = response.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+                token_response = client.post(
+                    "/oauth/token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": "mcp-client",
+                        "client_secret": "mcp-secret-value",
+                        "code": code,
+                        "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
+                        "code_verifier": verifier,
+                    },
+                )
+            self.assertEqual(token_response.status_code, 200)
+            self.assertEqual(token_response.json()["token_type"], "Bearer")
+
+    def test_wrong_workspace_session_restarts_google_login(self):
+        from app_config import load_app_config
+        from oauth_server import _sign, _s256, oauth_routes
+        from starlette.applications import Starlette
+        from starlette.testclient import TestClient
+        from token_store import TokenStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = _remote_env({"DATABASE_URL": f"sqlite:///{os.path.join(tmpdir, 'auth.db')}"})
+            config = load_app_config(env)
+            store = TokenStore(config.database_url, config.encryption_key)
+            store.init()
+            query = (
+                "/oauth/authorize?response_type=code&client_id=mcp-client&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback"
+                f"&code_challenge={_s256('verifier-value')}&code_challenge_method=S256&scope=mcp"
+            )
+            app = Starlette(routes=oauth_routes(config, store))
+            cookie = _sign({"sub": "sub", "email": "user@example.com", "hd": "example.com", "exp": 9999999999}, config.session.cookie_secret)
+            with TestClient(app) as client:
+                client.cookies.set(config.session.cookie_name, cookie)
+                response = client.get(query, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("accounts.google.com", response.headers["location"])
+
+
+def _remote_env(overrides=None):
+    env = {
+        "PUBLIC_BASE_URL": "https://gsc.example.com",
+        "GOOGLE_CLIENT_ID": "google-client",
+        "GOOGLE_CLIENT_SECRET": "google-secret",
+        "GOOGLE_HOSTED_DOMAIN": "meditodigital.com",
+        "MCP_OAUTH_CLIENT_ID": "mcp-client",
+        "MCP_OAUTH_CLIENT_SECRET": "mcp-secret-value",
+        "MCP_OAUTH_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback",
+        "DATABASE_URL": "sqlite:////tmp/mcp-gsc-test.db",
+        "APP_ENCRYPTION_KEY": _fernet_key(),
+        "SESSION_COOKIE_SECRET": "abcdefghijklmnopqrstuvwxyz123456",
+    }
+    if overrides:
+        env.update(overrides)
+    return env
+
+
+def _fernet_key():
+    from cryptography.fernet import Fernet
+
+    return Fernet.generate_key().decode("ascii")
+
+
 if __name__ == "__main__":
     unittest.main()

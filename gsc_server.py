@@ -20,10 +20,10 @@ from googleapiclient.errors import HttpError
 # fatal error, so this prevents false crashes.
 logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
-# MCP
-from mcp.server.fastmcp import FastMCP
+from auth_context import create_mcp, current_user_has_write_scope, get_remote_gsc_credentials
+from app_config import WRITE_GSC_SCOPE
 
-mcp = FastMCP("gsc-server")
+mcp = create_mcp("gsc-server")
 
 def _expand_path(path: Optional[str]) -> Optional[str]:
     """Expand ``~`` and environment variables in a path, returning None for empty input.
@@ -90,11 +90,21 @@ DATA_STATE = _raw_data_state
 
 SCOPES = ["https://www.googleapis.com/auth/webmasters"]
 
+def _write_scope_required() -> Optional[str]:
+    if current_user_has_write_scope():
+        return None
+    return f"Error: This tool requires the Google scope {WRITE_GSC_SCOPE}. Reconnect the MCP after enabling write scope."
+
+
 def get_gsc_service():
     """
     Returns an authorized Search Console service object.
     First tries OAuth authentication, then falls back to service account.
     """
+    remote_creds = get_remote_gsc_credentials()
+    if remote_creds is not None:
+        return build("searchconsole", "v1", credentials=remote_creds, cache_discovery=False)
+
     # Fail-fast if credential env vars are set but point to files that don't exist.
     # Without this, a typo'd or uvx-incompatible path would silently fall through to
     # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
@@ -343,6 +353,9 @@ async def add_site(site_url: str) -> str:
             "Safety: add_site is a destructive operation that modifies your GSC account. "
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
+    write_scope_error = _write_scope_required()
+    if write_scope_error:
+        return write_scope_error
     try:
         service = get_gsc_service()
         
@@ -404,6 +417,9 @@ async def delete_site(site_url: str) -> str:
             "Safety: delete_site permanently removes a property from your GSC account. "
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
+    write_scope_error = _write_scope_required()
+    if write_scope_error:
+        return write_scope_error
     try:
         service = get_gsc_service()
         
@@ -1471,6 +1487,9 @@ async def submit_sitemap(site_url: str, sitemap_url: str) -> str:
                   domain property as site_url and filter by page to analyze a specific subdomain.
         sitemap_url: The full URL of the sitemap to submit
     """
+    write_scope_error = _write_scope_required()
+    if write_scope_error:
+        return write_scope_error
     try:
         service = get_gsc_service()
         
@@ -1523,6 +1542,9 @@ async def delete_sitemap(site_url: str, sitemap_url: str) -> str:
             "Safety: delete_sitemap permanently removes a sitemap from GSC. "
             "Set GSC_ALLOW_DESTRUCTIVE=true in your environment to enable add/delete tools."
         )
+    write_scope_error = _write_scope_required()
+    if write_scope_error:
+        return write_scope_error
     try:
         service = get_gsc_service()
         
@@ -1657,7 +1679,7 @@ async def reauthenticate() -> str:
 
 
 def main():
-    """Entry point for the MCP server. Supports stdio (default) and SSE transports."""
+    """Entry point for the MCP server. Supports stdio (default), SSE, and Streamable HTTP transports."""
     transport = os.environ.get("MCP_TRANSPORT", "stdio").lower()
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     try:
@@ -1669,10 +1691,14 @@ def main():
         mcp.run(transport="stdio")
     elif transport in {"sse", "http"}:
         mcp.run(transport="sse", host=host, port=port)
+    elif transport in {"streamable-http", "remote-http"}:
+        from web_app import run_web_app
+
+        run_web_app(mcp)
     else:
         raise ValueError(
             f"Unknown MCP_TRANSPORT '{transport}'. "
-            "Use 'stdio' (default) or 'sse'."
+            "Use 'stdio' (default), 'sse', or 'streamable-http'."
         )
 
 
