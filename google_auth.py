@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import secrets
 
 from google.auth.transport.requests import Request
@@ -44,7 +45,11 @@ def complete_google_login(config: AppConfig, store: TokenStore, state: str | Non
         raise GoogleAuthError("Google login state is missing or expired")
 
     flow = _flow(config)
-    flow.fetch_token(code=code, code_verifier=auth_flow.code_verifier)
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+    try:
+        flow.fetch_token(code=code, code_verifier=auth_flow.code_verifier)
+    except Exception as error:
+        raise GoogleAuthError("Google token exchange failed") from error
     credentials = flow.credentials
     if not credentials.id_token:
         raise GoogleAuthError("Google did not return an identity token")

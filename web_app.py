@@ -14,7 +14,6 @@ def create_web_app(mcp: FastMCP) -> Starlette:
     config = get_app_config()
     store = get_token_store()
     store.init()
-    mcp.settings.streamable_http_path = "/"
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -22,7 +21,7 @@ def create_web_app(mcp: FastMCP) -> Starlette:
             yield
 
     return Starlette(
-        routes=[*oauth_routes(config, store), Mount("/mcp", app=mcp.streamable_http_app())],
+        routes=[*oauth_routes(config, store), Mount("/", app=mcp.streamable_http_app())],
         lifespan=lifespan,
     )
 
