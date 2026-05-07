@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -9,6 +10,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 
 from app_config import WRITE_GSC_SCOPE, AppConfig, load_app_config, remote_auth_enabled
@@ -37,6 +39,7 @@ def create_mcp(name: str) -> FastMCP:
         return FastMCP(name)
     config = get_app_config()
     store = get_token_store()
+    public_host = urlparse(config.server.public_base_url).netloc
     return FastMCP(
         name,
         json_response=True,
@@ -46,6 +49,9 @@ def create_mcp(name: str) -> FastMCP:
             issuer_url=AnyHttpUrl(config.server.public_base_url),
             resource_server_url=AnyHttpUrl(f"{config.server.public_base_url}/mcp"),
             required_scopes=["mcp"],
+        ),
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=[public_host],
         ),
     )
 
