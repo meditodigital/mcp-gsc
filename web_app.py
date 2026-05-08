@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import sys
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
@@ -29,5 +31,17 @@ def create_web_app(mcp: FastMCP) -> Starlette:
 def run_web_app(mcp: FastMCP) -> None:
     import uvicorn
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+
     config = get_app_config()
-    uvicorn.run(create_web_app(mcp), host=config.server.host, port=config.server.port)
+    uvicorn.run(
+        create_web_app(mcp),
+        host=config.server.host,
+        port=config.server.port,
+        log_config=None,
+    )
