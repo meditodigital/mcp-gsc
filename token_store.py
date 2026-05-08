@@ -66,7 +66,7 @@ class TokenStore:
     def init(self) -> None:
         statements = [
             """
-            CREATE TABLE IF NOT EXISTS google_auth_flows (
+            CREATE TABLE IF NOT EXISTS gsc_google_auth_flows (
                 state_hash TEXT PRIMARY KEY,
                 code_verifier TEXT NOT NULL,
                 nonce TEXT NOT NULL,
@@ -76,7 +76,7 @@ class TokenStore:
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS google_credentials (
+            CREATE TABLE IF NOT EXISTS gsc_google_credentials (
                 subject TEXT PRIMARY KEY,
                 email TEXT NOT NULL,
                 hosted_domain TEXT NOT NULL,
@@ -88,7 +88,7 @@ class TokenStore:
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+            CREATE TABLE IF NOT EXISTS gsc_oauth_authorization_codes (
                 code_hash TEXT PRIMARY KEY,
                 client_id TEXT NOT NULL,
                 redirect_uri TEXT NOT NULL,
@@ -101,7 +101,7 @@ class TokenStore:
             )
             """,
             """
-            CREATE TABLE IF NOT EXISTS oauth_tokens (
+            CREATE TABLE IF NOT EXISTS gsc_oauth_tokens (
                 access_token_hash TEXT PRIMARY KEY,
                 refresh_token_hash TEXT UNIQUE NOT NULL,
                 client_id TEXT NOT NULL,
@@ -114,8 +114,8 @@ class TokenStore:
                 last_used_at INTEGER
             )
             """,
-            "CREATE INDEX IF NOT EXISTS oauth_tokens_refresh_idx ON oauth_tokens(refresh_token_hash)",
-            "CREATE INDEX IF NOT EXISTS oauth_tokens_subject_idx ON oauth_tokens(subject)",
+            "CREATE INDEX IF NOT EXISTS gsc_oauth_tokens_refresh_idx ON gsc_oauth_tokens(refresh_token_hash)",
+            "CREATE INDEX IF NOT EXISTS gsc_oauth_tokens_subject_idx ON gsc_oauth_tokens(subject)",
         ]
         with self._connection() as conn:
             for statement in statements:
@@ -125,7 +125,7 @@ class TokenStore:
         now = int(time.time())
         self._execute_write(
             """
-            INSERT INTO google_auth_flows (state_hash, code_verifier, nonce, return_to, expires_at, created_at)
+            INSERT INTO gsc_google_auth_flows (state_hash, code_verifier, nonce, return_to, expires_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(state_hash) DO UPDATE SET
                 code_verifier=excluded.code_verifier,
@@ -140,10 +140,10 @@ class TokenStore:
     def consume_google_flow(self, state: str) -> GoogleFlow | None:
         now = int(time.time())
         row = self._fetch_one(
-            "SELECT state_hash, code_verifier, nonce, return_to, expires_at FROM google_auth_flows WHERE state_hash=? AND expires_at>?",
+            "SELECT state_hash, code_verifier, nonce, return_to, expires_at FROM gsc_google_auth_flows WHERE state_hash=? AND expires_at>?",
             (_hash(state), now),
         )
-        self._execute_write("DELETE FROM google_auth_flows WHERE state_hash=?", (_hash(state),))
+        self._execute_write("DELETE FROM gsc_google_auth_flows WHERE state_hash=?", (_hash(state),))
         if row is None:
             return None
         return GoogleFlow(state=state, code_verifier=row["code_verifier"], nonce=row["nonce"], return_to=row["return_to"], expires_at=int(row["expires_at"]))
@@ -153,7 +153,7 @@ class TokenStore:
         encrypted = self._fernet.encrypt(credentials_json.encode("utf-8")).decode("utf-8")
         self._execute_write(
             """
-            INSERT INTO google_credentials (subject, email, hosted_domain, display_name, credentials_json, scopes, created_at, updated_at)
+            INSERT INTO gsc_google_credentials (subject, email, hosted_domain, display_name, credentials_json, scopes, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(subject) DO UPDATE SET
                 email=excluded.email,
@@ -169,13 +169,13 @@ class TokenStore:
     def update_google_credentials(self, subject: str, credentials_json: str, scopes: list[str]) -> None:
         encrypted = self._fernet.encrypt(credentials_json.encode("utf-8")).decode("utf-8")
         self._execute_write(
-            "UPDATE google_credentials SET credentials_json=?, scopes=?, updated_at=? WHERE subject=?",
+            "UPDATE gsc_google_credentials SET credentials_json=?, scopes=?, updated_at=? WHERE subject=?",
             (encrypted, json.dumps(scopes), int(time.time()), subject),
         )
 
     def get_google_credentials(self, subject: str) -> tuple[Principal, str, list[str]] | None:
         row = self._fetch_one(
-            "SELECT subject, email, hosted_domain, display_name, credentials_json, scopes FROM google_credentials WHERE subject=?",
+            "SELECT subject, email, hosted_domain, display_name, credentials_json, scopes FROM gsc_google_credentials WHERE subject=?",
             (subject,),
         )
         if row is None:
@@ -189,7 +189,7 @@ class TokenStore:
     def create_authorization_code(self, code: str, client_id: str, redirect_uri: str, code_challenge: str, scopes: list[str], principal: Principal, ttl_seconds: int) -> None:
         self._execute_write(
             """
-            INSERT INTO oauth_authorization_codes (code_hash, client_id, redirect_uri, code_challenge, scopes, subject, expires_at, created_at)
+            INSERT INTO gsc_oauth_authorization_codes (code_hash, client_id, redirect_uri, code_challenge, scopes, subject, expires_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (_hash(code), client_id, redirect_uri, code_challenge, json.dumps(scopes), principal.subject, int(time.time()) + ttl_seconds, int(time.time())),
@@ -200,13 +200,13 @@ class TokenStore:
         row = self._fetch_one(
             """
             SELECT c.client_id, c.redirect_uri, c.code_challenge, c.scopes, g.subject, g.email, g.hosted_domain, g.display_name
-            FROM oauth_authorization_codes c
-            JOIN google_credentials g ON g.subject = c.subject
+            FROM gsc_oauth_authorization_codes c
+            JOIN gsc_google_credentials g ON g.subject = c.subject
             WHERE c.code_hash=? AND c.client_id=? AND c.redirect_uri=? AND c.consumed_at IS NULL AND c.expires_at>?
             """,
             (_hash(code), client_id, redirect_uri, now),
         )
-        self._execute_write("UPDATE oauth_authorization_codes SET consumed_at=? WHERE code_hash=?", (now, _hash(code)))
+        self._execute_write("UPDATE gsc_oauth_authorization_codes SET consumed_at=? WHERE code_hash=?", (now, _hash(code)))
         if row is None:
             return None
         return AuthorizationCode(
@@ -227,7 +227,7 @@ class TokenStore:
         )
         self._execute_write(
             """
-            INSERT INTO oauth_tokens (access_token_hash, refresh_token_hash, client_id, subject, scopes, access_token_expires_at, refresh_token_expires_at, created_at)
+            INSERT INTO gsc_oauth_tokens (access_token_hash, refresh_token_hash, client_id, subject, scopes, access_token_expires_at, refresh_token_expires_at, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (_hash(pair.access_token), _hash(pair.refresh_token), client_id, principal.subject, json.dumps(scopes), pair.access_token_expires_at, pair.refresh_token_expires_at, now),
@@ -238,15 +238,15 @@ class TokenStore:
         row = self._fetch_one(
             """
             SELECT t.client_id, t.scopes, t.access_token_expires_at, g.subject, g.email, g.hosted_domain, g.display_name
-            FROM oauth_tokens t
-            JOIN google_credentials g ON g.subject = t.subject
+            FROM gsc_oauth_tokens t
+            JOIN gsc_google_credentials g ON g.subject = t.subject
             WHERE t.access_token_hash=? AND t.revoked_at IS NULL AND t.access_token_expires_at>?
             """,
             (_hash(token), int(time.time())),
         )
         if row is None:
             return None
-        self._execute_write("UPDATE oauth_tokens SET last_used_at=? WHERE access_token_hash=?", (int(time.time()), _hash(token)))
+        self._execute_write("UPDATE gsc_oauth_tokens SET last_used_at=? WHERE access_token_hash=?", (int(time.time()), _hash(token)))
         return TokenValidation(
             client_id=row["client_id"],
             scopes=json.loads(row["scopes"]),
@@ -258,15 +258,15 @@ class TokenStore:
         row = self._fetch_one(
             """
             SELECT t.scopes, g.subject, g.email, g.hosted_domain, g.display_name
-            FROM oauth_tokens t
-            JOIN google_credentials g ON g.subject = t.subject
+            FROM gsc_oauth_tokens t
+            JOIN gsc_google_credentials g ON g.subject = t.subject
             WHERE t.refresh_token_hash=? AND t.client_id=? AND t.revoked_at IS NULL AND t.refresh_token_expires_at>?
             """,
             (_hash(refresh_token), client_id, int(time.time())),
         )
         if row is None:
             return None
-        self._execute_write("UPDATE oauth_tokens SET revoked_at=?, last_used_at=? WHERE refresh_token_hash=?", (int(time.time()), int(time.time()), _hash(refresh_token)))
+        self._execute_write("UPDATE gsc_oauth_tokens SET revoked_at=?, last_used_at=? WHERE refresh_token_hash=?", (int(time.time()), int(time.time()), _hash(refresh_token)))
         principal = _principal_from_row(row)
         scopes = json.loads(row["scopes"])
         pair = self.create_token_pair(client_id, principal, scopes, access_ttl, refresh_ttl)
@@ -274,7 +274,7 @@ class TokenStore:
 
     def revoke_token(self, token: str, client_id: str) -> None:
         self._execute_write(
-            "UPDATE oauth_tokens SET revoked_at=? WHERE client_id=? AND revoked_at IS NULL AND (access_token_hash=? OR refresh_token_hash=?)",
+            "UPDATE gsc_oauth_tokens SET revoked_at=? WHERE client_id=? AND revoked_at IS NULL AND (access_token_hash=? OR refresh_token_hash=?)",
             (int(time.time()), client_id, _hash(token), _hash(token)),
         )
 

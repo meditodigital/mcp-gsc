@@ -8,6 +8,7 @@ import importlib
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -811,6 +812,32 @@ class TestRemoteAuth(unittest.TestCase):
             self.assertEqual(validation.principal.email, "user@meditodigital.com")
             rotated = store.rotate_refresh_token(pair.refresh_token, "client", 60, 120)
             self.assertIsNotNone(rotated)
+
+    def test_token_store_uses_gsc_prefixed_tables(self):
+        from token_store import TokenStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "auth.db")
+            store = TokenStore(f"sqlite:///{db_path}", _fernet_key())
+            store.init()
+
+            with sqlite3.connect(db_path) as conn:
+                names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+
+            self.assertTrue(
+                {
+                    "gsc_google_auth_flows",
+                    "gsc_google_credentials",
+                    "gsc_oauth_authorization_codes",
+                    "gsc_oauth_tokens",
+                    "gsc_oauth_tokens_refresh_idx",
+                    "gsc_oauth_tokens_subject_idx",
+                }.issubset(names)
+            )
+            self.assertNotIn("google_auth_flows", names)
+            self.assertNotIn("google_credentials", names)
+            self.assertNotIn("oauth_authorization_codes", names)
+            self.assertNotIn("oauth_tokens", names)
 
     def test_oauth_code_flow_uses_workspace_session(self):
         from app_config import load_app_config
