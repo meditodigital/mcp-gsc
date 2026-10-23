@@ -2,6 +2,6 @@ cryptography>=42.0.0
 google-api-python-client>=2.163.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.1
-mcp[cli]>=1.12.4
+mcp[cli]>=1.12.4,<2
 platformdirs>=4.0.0
 psycopg[binary]>=3.2.0
