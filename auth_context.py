@@ -67,13 +67,22 @@ def get_remote_gsc_credentials() -> Credentials | None:
     if stored is None:
         raise RuntimeError("Connected Google account credentials were not found")
     _, credentials_json, scopes = stored
-    credentials = Credentials.from_authorized_user_info(json.loads(credentials_json), scopes=scopes)
+    credentials = credentials_from_stored(credentials_json, scopes, get_app_config())
     if not credentials.valid:
         if not credentials.refresh_token:
             raise RuntimeError("Connected Google account is missing a refresh token")
         credentials.refresh(Request())
         get_token_store().update_google_credentials(validation.principal.subject, credentials.to_json(), list(credentials.granted_scopes or scopes))
     return credentials
+
+
+def credentials_from_stored(credentials_json: str, scopes: list[str], config: AppConfig) -> Credentials:
+    # The stored JSON embeds the OAuth client secret from login time; use the
+    # current one so a rotated secret does not break every saved login.
+    info = json.loads(credentials_json)
+    info["client_id"] = config.google.client_id
+    info["client_secret"] = config.google.client_secret
+    return Credentials.from_authorized_user_info(info, scopes=scopes)
 
 
 def current_user_has_write_scope() -> bool:
